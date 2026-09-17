@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "CSV_STORAGE_CONNECTION": "<storage account connection string>",
+    "REDIS_CONNECTION_STRING": "rediss://:<redis primary key>@<redis host>:6380"
+  }
+}
