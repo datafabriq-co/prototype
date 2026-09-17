@@ -113,6 +113,12 @@ around $15-16/month for the smallest instance.
   when Redis has no cached result yet.
 - No authentication (prototype scope; can be added later via Static Web
   Apps auth or Function-level keys without changing the data model).
+- Client-to-API call path: the Function App is linked as the Static Web
+  App's managed backend (`az staticwebapp backends link`, see
+  Provisioning below), so the client calls `/api/metrics` on its own
+  origin and Static Web Apps proxies it server-side. This resolves the
+  CORS-vs-proxy question left open earlier in favor of the proxy — no
+  CORS configuration needed on the Function App.
 
 ## Client (React + Vite + TypeScript)
 
@@ -134,10 +140,103 @@ around $15-16/month for the smallest instance.
 | Shared store | Azure Cache for Redis (Basic) |
 | Client | Azure Static Web Apps |
 
-The implementation plan will include the concrete provisioning steps
-(resource group, storage account/container, Function App, Redis instance,
-Static Web App + GitHub Actions deploy workflow) since this is the user's
-first time setting up this kind of hosting.
+## Azure resource provisioning (Azure CLI)
+
+Reference commands for creating every resource in the table above.
+Assumes `az login` has already run and a subscription is selected
+(`az account set --subscription <id>`). Names below use shell variables
+so the whole block is copy-pasteable; storage account and Static Web App
+names must be globally unique, so `$SUFFIX` is a random suffix.
+
+```bash
+# --- variables ---
+RG=rg-daily-metrics-dashboard
+LOCATION=eastus
+SUFFIX=$(openssl rand -hex 3)          # globally-unique name suffix
+STORAGE=stdailymetrics$SUFFIX
+CONTAINER=csv-data
+REDIS=redis-daily-metrics-$SUFFIX
+FUNCAPP=func-daily-metrics-$SUFFIX
+SWA=swa-daily-metrics-$SUFFIX
+
+# --- resource group ---
+az group create --name $RG --location $LOCATION
+
+# --- storage account (holds the CSV container AND the Function App's
+#     own required internal storage) ---
+az storage account create \
+  --name $STORAGE --resource-group $RG --location $LOCATION \
+  --sku Standard_LRS --kind StorageV2
+
+az storage container create \
+  --name $CONTAINER --account-name $STORAGE --auth-mode login
+
+# --- Azure Cache for Redis (Basic tier, smallest size) ---
+az redis create \
+  --name $REDIS --resource-group $RG --location $LOCATION \
+  --sku Basic --vm-size c0
+
+# --- Function App (Node.js, Consumption plan — pay-per-execution) ---
+az functionapp create \
+  --name $FUNCAPP --resource-group $RG \
+  --consumption-plan-location $LOCATION \
+  --runtime node --runtime-version 20 --functions-version 4 \
+  --storage-account $STORAGE
+
+# --- wire the CSV storage account into the Function App so the Blob
+#     Trigger can read orders.csv / fulfillment.csv ---
+STORAGE_CONN=$(az storage account show-connection-string \
+  --name $STORAGE --resource-group $RG --query connectionString -o tsv)
+
+az functionapp config appsettings set \
+  --name $FUNCAPP --resource-group $RG \
+  --settings "CSV_STORAGE_CONNECTION=$STORAGE_CONN"
+
+# --- wire Redis into the Function App for both the preprocessor
+#     (write) and the API (read) ---
+REDIS_KEY=$(az redis list-keys \
+  --name $REDIS --resource-group $RG --query primaryKey -o tsv)
+REDIS_HOST=$(az redis show \
+  --name $REDIS --resource-group $RG --query hostName -o tsv)
+
+az functionapp config appsettings set \
+  --name $FUNCAPP --resource-group $RG \
+  --settings "REDIS_CONNECTION_STRING=rediss://:$REDIS_KEY@$REDIS_HOST:6380"
+
+# --- Static Web App (client hosting). This links a GitHub repo and
+#     branch for CI/CD; --login-with-github opens a browser auth prompt.
+#     app-location/output-location are relative to the repo root. ---
+az staticwebapp create \
+  --name $SWA --resource-group $RG --location $LOCATION \
+  --source https://github.com/<your-org>/<your-repo> \
+  --branch main \
+  --app-location "web-client" \
+  --output-location "dist" \
+  --login-with-github
+
+# --- link the Function App as the Static Web App's managed backend,
+#     so client calls to /api/* proxy to it with no CORS config ---
+az staticwebapp backends link \
+  --name $SWA --resource-group $RG \
+  --backend-resource-id $(az functionapp show \
+    --name $FUNCAPP --resource-group $RG --query id -o tsv) \
+  --backend-region $LOCATION
+```
+
+Notes:
+- If `az staticwebapp` isn't recognized, run
+  `az extension add --name staticwebapp` first (it's an official CLI
+  extension, not yet core on older `az` versions).
+- `az storage container create --auth-mode login` requires the signed-in
+  identity to have a data-plane role (e.g. Storage Blob Data Contributor)
+  on the account — if that fails, `--auth-mode key` with the account key
+  is the fallback.
+- The Function App's blob trigger binding (in code, not shown here) will
+  reference the `CSV_STORAGE_CONNECTION` app setting and the `csv-data`
+  container by name.
+- This is a reference script for understanding what gets created and
+  why; the implementation plan will confirm exact naming and whether to
+  run these by hand or via an IaC tool (Bicep/Terraform) as part of setup.
 
 ## Testing
 
