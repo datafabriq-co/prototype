@@ -66,7 +66,7 @@ echo "==> Function App: $FUNCAPP"
 az functionapp create \
   --name "$FUNCAPP" --resource-group "$RG" \
   --consumption-plan-location "$LOCATION" \
-  --runtime node --runtime-version 20 --functions-version 4 \
+  --runtime node --runtime-version 24 --functions-version 4 \
   --storage-account "$STORAGE" --output none
 
 echo "==> Wiring CSV storage connection into Function App"
