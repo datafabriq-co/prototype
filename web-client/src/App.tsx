@@ -1,7 +1,12 @@
+import MetricsTable from './MetricsTable'
+
 function App() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50">
-      <h1 className="text-4xl font-bold text-slate-800">Hello, World!</h1>
+    <div className="min-h-screen bg-slate-50 p-8">
+      <h1 className="mb-4 text-2xl font-bold text-slate-800">
+        Daily Revenue, COGS &amp; Net
+      </h1>
+      <MetricsTable />
     </div>
   )
 }
