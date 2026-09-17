@@ -14,7 +14,7 @@ set -euo pipefail
 
 # --- variables (override any of these via environment) ---
 RG="${RG:-rg-daily-metrics-dashboard}"
-LOCATION="${LOCATION:-eastus}"
+LOCATION="${LOCATION:-centralus}"
 SUFFIX="${SUFFIX:-$(openssl rand -hex 3)}"          # globally-unique name suffix
 STORAGE="${STORAGE:-stdailymetrics$SUFFIX}"
 CONTAINER="${CONTAINER:-csv-data}"
@@ -45,66 +45,106 @@ echo "==> Resource group: $RG ($LOCATION)"
 az group create --name "$RG" --location "$LOCATION" --output none
 
 echo "==> Storage account: $STORAGE"
-az storage account create \
-  --name "$STORAGE" --resource-group "$RG" --location "$LOCATION" \
-  --sku Standard_LRS --kind StorageV2 --output none
+if az storage account show --name "$STORAGE" --resource-group "$RG" --output none 2>/dev/null; then
+  echo "    already exists, skipping"
+  STORAGE_CREATED=false
+else
+  az storage account create \
+    --name "$STORAGE" --resource-group "$RG" --location "$LOCATION" \
+    --sku Standard_LRS --kind StorageV2 --output none
+  STORAGE_CREATED=true
+fi
 
 echo "==> Blob container: $CONTAINER"
-if ! az storage container create \
+if [ "$(az storage container exists \
+  --name "$CONTAINER" --account-name "$STORAGE" --auth-mode login --query exists -o tsv 2>/dev/null)" = "true" ]; then
+  echo "    already exists, skipping"
+elif ! az storage container create \
   --name "$CONTAINER" --account-name "$STORAGE" --auth-mode login --output none; then
   echo "    login auth-mode failed, falling back to --auth-mode key"
   az storage container create \
     --name "$CONTAINER" --account-name "$STORAGE" --auth-mode key --output none
 fi
 
-echo "==> Azure Cache for Redis: $REDIS (this can take several minutes)"
-az redis create \
-  --name "$REDIS" --resource-group "$RG" --location "$LOCATION" \
-  --sku Basic --vm-size c0 --output none
+echo "==> Azure Cache for Redis: $REDIS"
+if az redis show --name "$REDIS" --resource-group "$RG" --output none 2>/dev/null; then
+  echo "    already exists, skipping"
+  REDIS_CREATED=false
+else
+  echo "    creating (this can take several minutes)"
+  az redis create \
+    --name "$REDIS" --resource-group "$RG" --location "$LOCATION" \
+    --sku Basic --vm-size c0 --output none
+  REDIS_CREATED=true
+fi
 
 echo "==> Function App: $FUNCAPP"
-az functionapp create \
-  --name "$FUNCAPP" --resource-group "$RG" \
-  --consumption-plan-location "$LOCATION" \
-  --runtime node --runtime-version 24 --functions-version 4 \
-  --storage-account "$STORAGE" --output none
+if az functionapp show --name "$FUNCAPP" --resource-group "$RG" --output none 2>/dev/null; then
+  echo "    already exists, skipping"
+  FUNCAPP_CREATED=false
+else
+  az functionapp create \
+    --name "$FUNCAPP" --resource-group "$RG" \
+    --consumption-plan-location "$LOCATION" \
+    --runtime node --runtime-version 24 --functions-version 4 \
+    --storage-account "$STORAGE" --output none
+  FUNCAPP_CREATED=true
+fi
 
-echo "==> Wiring CSV storage connection into Function App"
-STORAGE_CONN=$(az storage account show-connection-string \
-  --name "$STORAGE" --resource-group "$RG" --query connectionString -o tsv)
+if [ "$FUNCAPP_CREATED" = true ] && [ "$STORAGE_CREATED" = true ]; then
+  echo "==> Wiring CSV storage connection into Function App"
+  STORAGE_CONN=$(az storage account show-connection-string \
+    --name "$STORAGE" --resource-group "$RG" --query connectionString -o tsv)
 
-az functionapp config appsettings set \
-  --name "$FUNCAPP" --resource-group "$RG" \
-  --settings "CSV_STORAGE_CONNECTION=$STORAGE_CONN" --output none
+  az functionapp config appsettings set \
+    --name "$FUNCAPP" --resource-group "$RG" \
+    --settings "CSV_STORAGE_CONNECTION=$STORAGE_CONN" --output none
+else
+  echo "==> Skipping CSV storage connection wiring (Function App and Storage account already existed)"
+fi
 
-echo "==> Wiring Redis connection into Function App"
-REDIS_KEY=$(az redis list-keys \
-  --name "$REDIS" --resource-group "$RG" --query primaryKey -o tsv)
-REDIS_HOST=$(az redis show \
-  --name "$REDIS" --resource-group "$RG" --query hostName -o tsv)
+if [ "$FUNCAPP_CREATED" = true ] && [ "$REDIS_CREATED" = true ]; then
+  echo "==> Wiring Redis connection into Function App"
+  REDIS_KEY=$(az redis list-keys \
+    --name "$REDIS" --resource-group "$RG" --query primaryKey -o tsv)
+  REDIS_HOST=$(az redis show \
+    --name "$REDIS" --resource-group "$RG" --query hostName -o tsv)
 
-az functionapp config appsettings set \
-  --name "$FUNCAPP" --resource-group "$RG" \
-  --settings "REDIS_CONNECTION_STRING=rediss://:$REDIS_KEY@$REDIS_HOST:6380" --output none
+  az functionapp config appsettings set \
+    --name "$FUNCAPP" --resource-group "$RG" \
+    --settings "REDIS_CONNECTION_STRING=rediss://:$REDIS_KEY@$REDIS_HOST:6380" --output none
+else
+  echo "==> Skipping Redis connection wiring (Function App and Redis cache already existed)"
+fi
 
 echo "==> Static Web App: $SWA (source: $GITHUB_REPO@$GITHUB_BRANCH)"
-echo "    --login-with-github will open a browser auth prompt"
-az staticwebapp create \
-  --name "$SWA" --resource-group "$RG" --location "$LOCATION" \
-  --source "$GITHUB_REPO" \
-  --branch "$GITHUB_BRANCH" \
-  --app-location "$APP_LOCATION" \
-  --output-location "$OUTPUT_LOCATION" \
-  --login-with-github
+if az staticwebapp show --name "$SWA" --resource-group "$RG" --output none 2>/dev/null; then
+  echo "    already exists, skipping"
+  SWA_CREATED=false
+else
+  echo "    --login-with-github will open a browser auth prompt"
+  az staticwebapp create \
+    --name "$SWA" --resource-group "$RG" --location "$LOCATION" \
+    --source "$GITHUB_REPO" \
+    --branch "$GITHUB_BRANCH" \
+    --app-location "$APP_LOCATION" \
+    --output-location "$OUTPUT_LOCATION" \
+    --login-with-github
+  SWA_CREATED=true
+fi
 
-echo "==> Linking Function App as Static Web App managed backend"
-FUNCAPP_ID=$(az functionapp show \
-  --name "$FUNCAPP" --resource-group "$RG" --query id -o tsv)
+if [ "$SWA_CREATED" = true ]; then
+  echo "==> Linking Function App as Static Web App managed backend"
+  FUNCAPP_ID=$(az functionapp show \
+    --name "$FUNCAPP" --resource-group "$RG" --query id -o tsv)
 
-az staticwebapp backends link \
-  --name "$SWA" --resource-group "$RG" \
-  --backend-resource-id "$FUNCAPP_ID" \
-  --backend-region "$LOCATION"
+  az staticwebapp backends link \
+    --name "$SWA" --resource-group "$RG" \
+    --backend-resource-id "$FUNCAPP_ID" \
+    --backend-region "$LOCATION"
+else
+  echo "==> Skipping backend link (Static Web App already existed)"
+fi
 
 cat <<EOF
 
