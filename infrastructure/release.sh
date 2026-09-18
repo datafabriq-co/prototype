@@ -8,14 +8,16 @@
 # subscription selected (`az account set --subscription <id>`).
 #
 # Usage:
-#   RG=rg-daily-metrics-dashboard SWA=swa-daily-metrics-abc123 \
+#   RG=rg-prototype-daily-metrics SWA=swa-daily-metrics-abc123 \
 #     FUNCAPP=func-daily-metrics-abc123 ./release.sh
 
 set -euo pipefail
 
-RG="${RG:?RG must be set to the resource group printed by deploy.sh}"
-SWA="${SWA:?SWA must be set to the Static Web App name printed by deploy.sh}"
-FUNCAPP="${FUNCAPP:?FUNCAPP must be set to the Function App name printed by deploy.sh}"
+# --- variables (override any of these via environment) ---
+RG="${RG:-rg-prototype-daily-metrics}"
+SUFFIX="${SUFFIX:-be6c8a}"
+FUNCAPP="${FUNCAPP:-func-daily-metrics-$SUFFIX}"
+SWA="${SWA:-swa-daily-metrics-$SUFFIX}"
 APP_LOCATION="${APP_LOCATION:-web-client}"
 OUTPUT_LOCATION="${OUTPUT_LOCATION:-dist}"
 API_LOCATION="${API_LOCATION:-api}"

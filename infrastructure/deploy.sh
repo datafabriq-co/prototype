@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # --- variables (override any of these via environment) ---
-RG="${RG:-rg-daily-metrics-dashboard}"
+RG="${RG:-rg-prototype-daily-metrics}"
 LOCATION="${LOCATION:-centralus}"
 SUFFIX="${SUFFIX:-$(openssl rand -hex 3)}"          # globally-unique name suffix
 STORAGE="${STORAGE:-stdailymetrics$SUFFIX}"
@@ -129,8 +129,18 @@ else
     --branch "$GITHUB_BRANCH" \
     --app-location "$APP_LOCATION" \
     --output-location "$OUTPUT_LOCATION" \
+    --sku Standard \
     --login-with-github
   SWA_CREATED=true
+fi
+
+echo "==> Ensuring Static Web App is on the Standard SKU (required for backend linking)"
+SWA_SKU=$(az staticwebapp show --name "$SWA" --resource-group "$RG" --query sku.name -o tsv)
+if [ "$SWA_SKU" != "Standard" ]; then
+  echo "    current SKU is '$SWA_SKU', upgrading to Standard"
+  az staticwebapp update --name "$SWA" --resource-group "$RG" --sku Standard --output none
+else
+  echo "    already Standard, skipping"
 fi
 
 if [ "$SWA_CREATED" = true ]; then
